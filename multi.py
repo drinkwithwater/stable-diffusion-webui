@@ -30,7 +30,13 @@ from modules import extra_networks, ui_extra_networks_checkpoints
 from modules import extra_networks_hypernet, ui_extra_networks_hypernets, ui_extra_networks_textual_inversion
 from modules.call_queue import wrap_queued_call, queue_lock, wrap_gradio_gpu_call
 
+from yolo8_hd.prediction import getHeadxywh
+
 controlnet_script = None
+
+DENOISING_STRENGTH = 0.45
+PROMPT = "(masterpiece:1.2), (best quality:1.2), photorealistic, 1girl, (nude), nsfw"
+NE_PROMPT = "paintings, cartoon, rendered, anime, sketches, (worst quality:2), (low quality:2), error,ugly,morbid,mutilated, clothing, easynegative, ng_deepnegative_v1_75t"
 
 def initialize():
     global controlnet_script
@@ -69,9 +75,9 @@ def img2img_controlnet(id_task: str, mode: int, prompt: str, negative_prompt: st
     return img2img(id_task, mode, prompt, negative_prompt, prompt_styles, init_img, sketch, init_img_with_mask, inpaint_color_sketch, inpaint_color_sketch_orig, init_img_inpaint, init_mask_inpaint, steps, sampler_index, mask_blur, mask_alpha, inpainting_fill, restore_faces, tiling, n_iter, batch_size, cfg_scale, image_cfg_scale, denoising_strength, seed, subseed, subseed_strength, seed_resize_from_h, seed_resize_from_w, seed_enable_extras, height, width, resize_mode, inpaint_full_res, inpaint_full_res_padding, inpainting_mask_invert, img2img_batch_input_dir, img2img_batch_output_dir, img2img_batch_inpaint_mask_dir, override_settings_texts, 0, controlnet_unit)
 
 # 1. 加载人头检测模型（Haar级联分类器）
-front_face = cv2.CascadeClassifier('workdir/haarcascade_frontalface_default.xml')
+#front_face = cv2.CascadeClassifier('workdir/haarcascade_frontalface_default.xml')
 # 2. 加载人头检测模型（Haar级联分类器）
-profile_face = cv2.CascadeClassifier('workdir/haarcascade_profileface.xml')
+#profile_face = cv2.CascadeClassifier('workdir/haarcascade_profileface.xml')
 
 class OneProcess(object):
     def __init__(self, singleName):
@@ -99,7 +105,7 @@ class OneProcess(object):
         # controlnet args
         controlnet_unit = controlnet_script.get_default_ui_unit()
         controlnet_unit.enabled = True
-        controlnet_unit.processor_res = 512
+        controlnet_unit.processor_res = self._width
         controlnet_unit.module = 'none'
         controlnet_unit.model = 'control_sd15_depth [fef5e48e]'
         controlnet_unit.guess_mode = False
@@ -108,16 +114,14 @@ class OneProcess(object):
         mask_arr[:,:,3] = 255
         controlnet_unit.image = dict(image=input_img_arr,mask=mask_arr)
         output_imgs,_,_,_ = img2img_controlnet(id_task="fds", mode=0,
-                prompt="""(masterpiece:1.2), (best quality:1.2), photorealistic, 1girl, nude""",
-                negative_prompt="""
-                paintings, cartoon, rendered, anime, sketches, (worst quality:2), (low quality:2), error,ugly,morbid,mutilated, easynegative, ng_deepnegative_v1_75t
-            """,
+                prompt=PROMPT,
+                negative_prompt=NE_PROMPT,
                 prompt_styles=[],
                 init_img=pixelImage,
                 sketch=None, init_img_with_mask=None, inpaint_color_sketch=None, inpaint_color_sketch_orig=None,
                 init_img_inpaint=None, init_mask_inpaint=None,
                 steps=20, sampler_index=0, mask_blur=4, mask_alpha=0, inpainting_fill=0, restore_faces=False, tiling=False,
-                n_iter=1, batch_size=1, cfg_scale=7, image_cfg_scale=1.5, denoising_strength=0.4,
+                n_iter=1, batch_size=1, cfg_scale=7, image_cfg_scale=1.5, denoising_strength=DENOISING_STRENGTH,
                 seed=1, subseed=-1, subseed_strength=0, seed_resize_from_h=0, seed_resize_from_w=0, seed_enable_extras=False,
                 height=self._height, width=self._width, resize_mode=0, inpaint_full_res=False, inpaint_full_res_padding=0,
                 inpainting_mask_invert=0, img2img_batch_input_dir="", img2img_batch_output_dir="", img2img_batch_inpaint_mask_dir="", override_settings_texts=[], controlnet_unit=controlnet_unit)
@@ -145,12 +149,12 @@ class OneProcess(object):
                 y = y.clip(0, 255).astype(np.uint8)
                 return y
         pre = controlnet_script.preprocessor["depth"]
-        result, is_image = pre(HWC3(input_img_arr), res=512, thr_a=64, thr_b=64)
+        result, is_image = pre(HWC3(input_img_arr), res=self._width, thr_a=64, thr_b=64)
         self._depthArr = np.empty(result.shape + (3,), dtype=np.uint8)
         self._depthArr[:,:,:] = result.reshape(result.shape + (1,))
         cv2.imwrite(self._depthPath, result)
 
-    def source2head(self):
+    def source2head_old(self):
         image = self._sourceArr.copy()
         gray = cv2.cvtColor(self._sourceArr, cv2.COLOR_RGB2GRAY)
         faces = front_face.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
@@ -168,6 +172,15 @@ class OneProcess(object):
             return
         cv2.imwrite(self._headPath, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
         (x,y,w,h) = face_xywh
+        self._headLine = y + h
+
+    def source2head(self):
+        image = self._sourceArr.copy()
+        x, y, w, h = getHeadxywh(image)
+        if x is None:
+            return
+        cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.imwrite(self._headPath, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
         self._headLine = y + h
 
     def sourcedepthhead2pixel(self):
@@ -189,11 +202,12 @@ class OneProcess(object):
     def main(self):
         self.source2head()
         if self._headLine == 0:
-            return
+            return False
         self.source2depth()
         self.sourcedepthhead2pixel()
         self.pixeldepth2draw()
         self.sourceheadraw2final()
+        return True
 
 class TwoProcess(OneProcess):
     def __init__(self, a, preProc):
@@ -208,7 +222,7 @@ class TwoProcess(OneProcess):
         # controlnet args
         controlnet_unit = controlnet_script.get_default_ui_unit()
         controlnet_unit.enabled = True
-        controlnet_unit.processor_res = 512
+        controlnet_unit.processor_res = self._width
         controlnet_unit.module = 'none'
         controlnet_unit.model = 'control_sd15_depth [fef5e48e]'
         controlnet_unit.guess_mode = False
@@ -227,16 +241,14 @@ class TwoProcess(OneProcess):
         latent_draw = pilImageDraw.Draw(latent_mask)
         latent_draw.rectangle((self._width,0,self._width*2, self._height), fill="white")
         output_imgs,_,_,_ = img2img_controlnet(id_task="fds", mode=4,
-                                               prompt="""(masterpiece:1.2), (best quality:1.2), photorealistic, 1girl, nude""",
-                                               negative_prompt="""
-                paintings, cartoon, rendered, anime, sketches, (worst quality:2), (low quality:2), error,ugly,morbid,mutilated, easynegative, ng_deepnegative_v1_75t
-            """,
+                                               prompt=PROMPT,
+                                               negative_prompt=NE_PROMPT,
                                                prompt_styles=[],
                                                init_img=None,
                                                sketch=None, init_img_with_mask=None, inpaint_color_sketch=None, inpaint_color_sketch_orig=None,
                                                init_img_inpaint=pixel_img, init_mask_inpaint=latent_mask,
                                                steps=20, sampler_index=0, mask_blur=4, mask_alpha=0, inpainting_fill=1, restore_faces=False, tiling=False,
-                                               n_iter=1, batch_size=1, cfg_scale=7, image_cfg_scale=1.5, denoising_strength=0.4,
+                                               n_iter=1, batch_size=1, cfg_scale=7, image_cfg_scale=1.5, denoising_strength=DENOISING_STRENGTH,
                                                seed=1, subseed=-1, subseed_strength=0, seed_resize_from_h=0, seed_resize_from_w=0, seed_enable_extras=False,
                                                height=self._height, width=self._width*2, resize_mode=0, inpaint_full_res=0, inpaint_full_res_padding=32,
                                                inpainting_mask_invert=0, img2img_batch_input_dir="", img2img_batch_output_dir="", img2img_batch_inpaint_mask_dir="", override_settings_texts=[], controlnet_unit=controlnet_unit)
@@ -252,8 +264,11 @@ if __name__=="__main__":
     for fileName in l:
         simpleName = fileName.split(".")[0]
         if proc is None:
-            proc = OneProcess(simpleName)
-            proc.main()
+            curProc = OneProcess(simpleName)
+            if curProc.main():
+                proc = curProc
         else:
-            proc = TwoProcess(simpleName, proc)
-            proc.main()
+            curProc = TwoProcess(simpleName, proc)
+            #curProc = OneProcess(simpleName)
+            if curProc.main():
+                proc = curProc
