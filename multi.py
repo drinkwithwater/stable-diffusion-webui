@@ -1,3 +1,7 @@
+
+from yolo8_hd.head import getHeadxywh
+from yolo8_hd.body import getMask
+
 import PIL.Image as pilImage
 import PIL.ImageDraw as pilImageDraw
 import os
@@ -30,12 +34,11 @@ from modules import extra_networks, ui_extra_networks_checkpoints
 from modules import extra_networks_hypernet, ui_extra_networks_hypernets, ui_extra_networks_textual_inversion
 from modules.call_queue import wrap_queued_call, queue_lock, wrap_gradio_gpu_call
 
-from yolo8_hd.prediction import getHeadxywh
-
 controlnet_script = None
 
-DENOISING_STRENGTH = 0.45
-PROMPT = "(masterpiece:1.2), (best quality:1.2), photorealistic, 1girl, (nude), nsfw"
+DENOISING_STRENGTH = 0.3
+CONTROLNET_WEIGHT = 0.8
+PROMPT = "(masterpiece:1.2), (best quality:1.2), photorealistic, 1girl, (nude), (nsfw), no clothing"
 NE_PROMPT = "paintings, cartoon, rendered, anime, sketches, (worst quality:2), (low quality:2), error,ugly,morbid,mutilated, clothing, easynegative, ng_deepnegative_v1_75t"
 
 def initialize():
@@ -91,6 +94,8 @@ class OneProcess(object):
         self._pixelPath = "workdir/pixel/"+singleName+".jpg"
         self._depthArr = None
         self._depthPath = "workdir/depth/"+singleName+".jpg"
+        self._maskArr = None
+        self._maskPath = "workdir/segment/"+singleName+".jpg"
         self._drawArr = None
         self._drawImage = None
         self._drawPath = "workdir/draw/"+singleName+".jpg"
@@ -105,6 +110,7 @@ class OneProcess(object):
         # controlnet args
         controlnet_unit = controlnet_script.get_default_ui_unit()
         controlnet_unit.enabled = True
+        controlnet_unit.weight = CONTROLNET_WEIGHT
         controlnet_unit.processor_res = self._width
         controlnet_unit.module = 'none'
         controlnet_unit.model = 'control_sd15_depth [fef5e48e]'
@@ -154,6 +160,11 @@ class OneProcess(object):
         self._depthArr[:,:,:] = result.reshape(result.shape + (1,))
         cv2.imwrite(self._depthPath, result)
 
+    def source2mask(self):
+        input_img_arr = np.asarray(self._sourceImage.convert("RGB"))
+        self._maskArr = getMask(input_img_arr)
+        cv2.imwrite(self._maskPath, self._maskArr)
+
     def source2head_old(self):
         image = self._sourceArr.copy()
         gray = cv2.cvtColor(self._sourceArr, cv2.COLOR_RGB2GRAY)
@@ -188,7 +199,22 @@ class OneProcess(object):
         depth = self._depthArr
         pixel = self._sourceArr.copy()
         source32 = self._sourceArr.astype(np.int32)
-        pixel[line:,:] = (source32[line:,:] + 10 * (source32[line:,:] * (255-depth[line:,:]) + (189, 169, 162) * depth[line:,:]) // 255)//10
+        pixel[line:,:] = (source32[line:,:] + 9 * (source32[line:,:] * (255-depth[line:,:]) + (189, 169, 162) * depth[line:,:]) // 255)//10
+        cv2.imwrite(self._pixelPath, cv2.cvtColor(pixel, cv2.COLOR_RGB2BGR))
+        self._pixelImage = PIL.Image.open(self._pixelPath)
+
+    def sourcemaskhead2pixel(self):
+        line = self._headLine
+        mask = self._maskArr.astype(np.int32)
+        pixel = self._sourceArr.copy()
+        source32 = self._sourceArr.astype(np.int32)
+        source32Out = source32 * (255-mask)//255
+        source32In = source32 * mask//255
+        source32In = (source32In + 9*np.array([189, 169, 162])*mask//255)//10
+        print("max color:", np.max(source32In), np.max(source32Out))
+        pixel[line:,:] = source32Out[line:,:] + source32In[line:,:]
+        cv2.imwrite("in.jpg", cv2.cvtColor(source32In.astype(np.uint8), cv2.COLOR_RGB2BGR))
+        cv2.imwrite("out.jpg", cv2.cvtColor(source32Out.astype(np.uint8), cv2.COLOR_RGB2BGR))
         cv2.imwrite(self._pixelPath, cv2.cvtColor(pixel, cv2.COLOR_RGB2BGR))
         self._pixelImage = PIL.Image.open(self._pixelPath)
 
@@ -204,7 +230,9 @@ class OneProcess(object):
         if self._headLine == 0:
             return False
         self.source2depth()
-        self.sourcedepthhead2pixel()
+        self.source2mask()
+        #self.sourcedepthhead2pixel()
+        self.sourcemaskhead2pixel()
         self.pixeldepth2draw()
         self.sourceheadraw2final()
         return True
@@ -222,6 +250,7 @@ class TwoProcess(OneProcess):
         # controlnet args
         controlnet_unit = controlnet_script.get_default_ui_unit()
         controlnet_unit.enabled = True
+        controlnet_unit.weight = CONTROLNET_WEIGHT
         controlnet_unit.processor_res = self._width
         controlnet_unit.module = 'none'
         controlnet_unit.model = 'control_sd15_depth [fef5e48e]'
@@ -258,17 +287,17 @@ class TwoProcess(OneProcess):
 
 if __name__=="__main__":
     initialize()
-    proc = None
+    firstProc = None
     l = os.listdir("workdir/input")
     l.sort()
     for fileName in l:
         simpleName = fileName.split(".")[0]
-        if proc is None:
+        if firstProc is None:
             curProc = OneProcess(simpleName)
             if curProc.main():
-                proc = curProc
+                firstProc = curProc
         else:
-            curProc = TwoProcess(simpleName, proc)
-            #curProc = OneProcess(simpleName)
+            #curProc = TwoProcess(simpleName, firstProc)
+            curProc = OneProcess(simpleName)
             if curProc.main():
-                proc = curProc
+                firstProc = curProc

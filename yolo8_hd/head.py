@@ -169,6 +169,22 @@ def prediction(image_path, conf=20, model_path="best_re_final.onnx"):
     # plt.show()
     return annotated_image
 
+def getCenter(image, conf=20, model_path="yolo8_hd/best_re_final.onnx"):
+    global confidence
+    global conf_thresold
+
+    confidence = conf
+    conf_thresold = confidence/100
+    # *Calling Functions
+    model = load_model(model_path)
+    input_I = pre_image(image, model[1]) #path and input shape is passed
+    predictions = predict(image, model[0], input_I, conf_thresold)  #image, ort_session, and input tensor is passed
+    all_rect = predictions[0]
+    if len(all_rect) > 0:
+        bbox = all_rect[np.argmax(predictions[1])]
+        return bbox[0], bbox[1]
+    else:
+        return None, None
 
 def getHeadxywh(image, conf=20, model_path="yolo8_hd/best_re_final.onnx"):
     global confidence
