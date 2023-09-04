@@ -165,17 +165,34 @@ class PreProcess(object):
         cv2.imwrite(self._pixelPath, cv2.cvtColor(pixel, cv2.COLOR_RGB2BGR))
         self._pixelImage = PIL.Image.open(self._pixelPath)
 
-    def sourcemaskhead2pixel(self):
+    def getSkinHairMask(self):
+        # calc skin
+        yuv = cv2.cvtColor(self._sourceArr, cv2.COLOR_RGB2YCrCb)
+        lower_skin = np.array([0, 133, 77], dtype=np.uint8)
+        upper_skin = np.array([255, 173, 127], dtype=np.uint8)
+        skin_mask = cv2.inRange(yuv, lower_skin, upper_skin).reshape((self._height, self._width, 1))
+        # calc hair
+        gray = cv2.cvtColor(self._sourceArr, cv2.COLOR_RGB2GRAY)
+        hair_mask = ((gray < 50) * 255).astype(np.uint8).reshape((self._height, self._width, 1))
+        # calc average skin color
+        #skin = self._sourceArr & skin_mask
+        #skin[:self._headLine] = 0
+        #gray = cv2.cvtColor(skin, cv2.COLOR_RGB2GRAY)
+        #calc_mask = gray > 100
+        #calc = calc_mask.reshape(calc_mask.shape + (1,)) * skin
+        #color = np.sum(calc, axis=(0,1)) /np.sum(calc_mask)
+        return skin_mask, hair_mask
+
+    def sourceseghead2pixel(self):
         line = self._headLine
-        mask = self._segmentArr.astype(np.int32)
+        skin_mask, hair_mask = self.getSkinHairMask()
+        mask = (self._segmentArr & ~skin_mask & ~hair_mask).astype(np.int32)
         pixel = self._sourceArr.copy()
         source32 = self._sourceArr.astype(np.int32)
         source32Out = source32 * (255-mask)//255
         source32In = source32 * mask//255
         source32In = (source32In + 9*np.array([189, 169, 162])*mask//255)//10
         pixel[line:,:] = source32Out[line:,:] + source32In[line:,:]
-        cv2.imwrite("in.jpg", cv2.cvtColor(source32In.astype(np.uint8), cv2.COLOR_RGB2BGR))
-        cv2.imwrite("out.jpg", cv2.cvtColor(source32Out.astype(np.uint8), cv2.COLOR_RGB2BGR))
         cv2.imwrite(self._pixelPath, cv2.cvtColor(pixel, cv2.COLOR_RGB2BGR))
         self._pixelImage = PIL.Image.open(self._pixelPath)
 
@@ -187,7 +204,7 @@ class PreProcess(object):
         self.source2seg()
         self.depthseg2mask()
         #self.sourcedepthhead2pixel()
-        self.sourcemaskhead2pixel()
+        self.sourceseghead2pixel()
         return True
 
     def main(self):
@@ -201,3 +218,4 @@ if __name__=="__main__":
         simpleName = fileName.split(".")[0]
         curProc = PreProcess(simpleName)
         curProc.main()
+        print(fileName, "finish")

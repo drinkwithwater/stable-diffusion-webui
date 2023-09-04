@@ -4,7 +4,7 @@ import cv2
 
 def images_to_video():
     image_folder = "workdir/final"
-    video_name = "workdir/final.mp4"
+    video_name = "workdir/final_skin.mp4"
     fps = 30
     images = [img for img in os.listdir(image_folder) if img.endswith(".jpg")]
     images.sort()

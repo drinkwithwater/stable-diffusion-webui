@@ -147,3 +147,5 @@ if __name__=="__main__":
             #curProc = OneProcess(simpleName)
             if curProc.main():
                 firstProc = curProc
+    from p2v import images_to_video
+    images_to_video()
