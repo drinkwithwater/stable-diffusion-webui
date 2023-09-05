@@ -163,7 +163,6 @@ def prediction(image_path, conf=20, model_path="best_re_final.onnx"):
     image = read_image(image_path)
     input_I = pre_image(image, model[1]) #path and input shape is passed
     predictions = predict(image, model[0], input_I, conf_thresold)  #image, ort_session, and input tensor is passed
-    print(predictions)
     annotated_image = annotate(image, predictions[0], predictions[1], predictions[2]) #boxes, and scores are passed
     # plt.imshow(annotated_image)
     # plt.show()

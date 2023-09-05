@@ -57,6 +57,7 @@ class PreProcess(object):
         self._sourceArr = np.asarray(self._sourceImage)
         self._shape = self._sourceArr.shape
         self._height, self._width, _ = self._shape
+        self._rawHeadLine:int = 0
         self._headLine:int = 0
         self._headPath = "workdir/head/"+singleName+".jpg"
         self._pixelImage = None
@@ -65,42 +66,10 @@ class PreProcess(object):
         self._depthPath = "workdir/depth/"+singleName+".jpg"
         self._segmentArr = None
         self._segmentPath = "workdir/segment/"+singleName+".jpg"
+        self._hairPath = "workdir/skin/"+singleName+"_hair.jpg"
+        self._skinPath = "workdir/skin/"+singleName+"_skin.jpg"
         self._inpaintMaskArr = None
         self._inpaintMaskPath = "workdir/mask/"+singleName+".jpg"
-
-    def pixeldepth2draw(self):
-        pixelImage = self._pixelImage
-        depthArr = self._depthArr
-        if pixelImage is None:
-            print("WARNING: pixel image is not calculated")
-            pixelImage = self._sourceImage
-        # controlnet args
-        controlnet_unit = controlnet_script.get_default_ui_unit()
-        controlnet_unit.enabled = True
-        controlnet_unit.weight = CONTROLNET_WEIGHT
-        controlnet_unit.processor_res = self._width
-        controlnet_unit.module = 'none'
-        controlnet_unit.model = 'control_sd15_depth [fef5e48e]'
-        controlnet_unit.guess_mode = False
-        input_img_arr = np.asarray(depthArr)
-        mask_arr = np.zeros((input_img_arr.shape[0], input_img_arr.shape[1], 4), dtype=np.uint8)
-        mask_arr[:,:,3] = 255
-        controlnet_unit.image = dict(image=input_img_arr,mask=mask_arr)
-        output_imgs,_,_,_ = img2img_controlnet(id_task="fds", mode=0,
-                prompt=PROMPT,
-                negative_prompt=NE_PROMPT,
-                prompt_styles=[],
-                init_img=pixelImage,
-                sketch=None, init_img_with_mask=None, inpaint_color_sketch=None, inpaint_color_sketch_orig=None,
-                init_img_inpaint=None, init_mask_inpaint=None,
-                steps=20, sampler_index=0, mask_blur=4, mask_alpha=0, inpainting_fill=0, restore_faces=False, tiling=False,
-                n_iter=1, batch_size=1, cfg_scale=7, image_cfg_scale=1.5, denoising_strength=DENOISING_STRENGTH,
-                seed=1, subseed=-1, subseed_strength=0, seed_resize_from_h=0, seed_resize_from_w=0, seed_enable_extras=False,
-                height=self._height, width=self._width, resize_mode=0, inpaint_full_res=False, inpaint_full_res_padding=0,
-                inpainting_mask_invert=0, img2img_batch_input_dir="", img2img_batch_output_dir="", img2img_batch_inpaint_mask_dir="", override_settings_texts=[], controlnet_unit=controlnet_unit)
-        self._drawImage = output_imgs[0]
-        self._drawArr = np.asarray(self._drawImage)
-        self._drawImage.save(self._drawPath)
 
     def source2depth(self):
         input_img_arr = np.asarray(self._sourceImage.convert("RGB"))
@@ -147,6 +116,12 @@ class PreProcess(object):
         self._inpaintMaskArr = finalMask
         cv2.imwrite(self._inpaintMaskPath, self._inpaintMaskArr)
 
+    def isDark(self):
+        image = cv2.cvtColor(self._sourceArr, cv2.COLOR_BGR2GRAY)
+        bad = np.sum(image < 100) + np.sum(image > 240)
+        both = image.shape[0] * image.shape[1]
+        return bad/both > 0.8
+
     def source2head(self):
         image = self._sourceArr.copy()
         x, y, w, h = getHeadxywh(image)
@@ -154,6 +129,8 @@ class PreProcess(object):
             return
         cv2.rectangle(image, (x, y), (x + w, y + h), (0, 255, 0), 2)
         cv2.imwrite(self._headPath, cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
+        self._rawHeadLine = y + h
+        #self._headLine = y + h + self._height//20
         self._headLine = y + h
 
     def sourcedepthhead2pixel(self):
@@ -161,19 +138,25 @@ class PreProcess(object):
         depth = self._depthArr
         pixel = self._sourceArr.copy()
         source32 = self._sourceArr.astype(np.int32)
-        pixel[line:,:] = (source32[line:,:] + 9 * (source32[line:,:] * (255-depth[line:,:]) + (189, 169, 162) * depth[line:,:]) // 255)//10
+        pixel[line:,:] = (source32[line:,:] + 9 * (source32[line:,:] * (255-depth[line:,:]) + (209, 169, 152) * depth[line:,:]) // 255)//10
         cv2.imwrite(self._pixelPath, cv2.cvtColor(pixel, cv2.COLOR_RGB2BGR))
         self._pixelImage = PIL.Image.open(self._pixelPath)
 
     def getSkinHairMask(self):
+        # 用于去除噪点
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         # calc skin
         yuv = cv2.cvtColor(self._sourceArr, cv2.COLOR_RGB2YCrCb)
         lower_skin = np.array([0, 133, 77], dtype=np.uint8)
         upper_skin = np.array([255, 173, 127], dtype=np.uint8)
-        skin_mask = cv2.inRange(yuv, lower_skin, upper_skin).reshape((self._height, self._width, 1))
+        skin_mask = cv2.inRange(yuv, lower_skin, upper_skin)
+        skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_OPEN, kernel)
+        skin_mask = skin_mask.reshape((self._height, self._width, 1))
         # calc hair
         gray = cv2.cvtColor(self._sourceArr, cv2.COLOR_RGB2GRAY)
-        hair_mask = ((gray < 50) * 255).astype(np.uint8).reshape((self._height, self._width, 1))
+        hair_mask = ((gray < 50) * 255).astype(np.uint8)
+        hair_mask = cv2.morphologyEx(hair_mask, cv2.MORPH_OPEN, kernel)
+        hair_mask = hair_mask.reshape((self._height, self._width, 1))
         # calc average skin color
         #skin = self._sourceArr & skin_mask
         #skin[:self._headLine] = 0
@@ -186,12 +169,13 @@ class PreProcess(object):
     def sourceseghead2pixel(self):
         line = self._headLine
         skin_mask, hair_mask = self.getSkinHairMask()
-        mask = (self._segmentArr & ~skin_mask & ~hair_mask).astype(np.int32)
+        #mask = (self._segmentArr & ~skin_mask & ~hair_mask).astype(np.int32)
+        mask = (self._segmentArr & ~skin_mask).astype(np.int32)
         pixel = self._sourceArr.copy()
         source32 = self._sourceArr.astype(np.int32)
         source32Out = source32 * (255-mask)//255
         source32In = source32 * mask//255
-        source32In = (source32In + 9*np.array([189, 169, 162])*mask//255)//10
+        source32In = np.array([189, 169, 162])*mask//255
         pixel[line:,:] = source32Out[line:,:] + source32In[line:,:]
         cv2.imwrite(self._pixelPath, cv2.cvtColor(pixel, cv2.COLOR_RGB2BGR))
         self._pixelImage = PIL.Image.open(self._pixelPath)
@@ -199,6 +183,8 @@ class PreProcess(object):
     def premain(self):
         self.source2head()
         if self._headLine == 0:
+            return False
+        if self.isDark():
             return False
         self.source2depth()
         self.source2seg()

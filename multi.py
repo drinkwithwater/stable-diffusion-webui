@@ -2,6 +2,7 @@
 import PIL.Image as pilImage
 import PIL.ImageDraw as pilImageDraw
 import os
+import shutil
 import PIL
 import cv2
 import numpy as np
@@ -10,10 +11,10 @@ import preprocess
 
 controlnet_script = None
 
-DENOISING_STRENGTH = 0.3
-CONTROLNET_WEIGHT = 0.8
+DENOISING_STRENGTH = 0.4
+CONTROLNET_WEIGHT = 0.9
 PROMPT = "(masterpiece:1.2), (best quality:1.2), photorealistic, 1girl, (nude), (nsfw), no clothing"
-NE_PROMPT = "paintings, cartoon, rendered, anime, sketches, (worst quality:2), (low quality:2), error,ugly,morbid,mutilated, clothing, easynegative, ng_deepnegative_v1_75t"
+NE_PROMPT = "paintings, cartoon, rendered, anime, sketches, (worst quality:2), (low quality:2), error,ugly,morbid,mutilated, clothing, easynegative, ng_deepnegative_v1_75t, bad anatomy, bad hands"
 
 import modules.img2img
 
@@ -37,7 +38,7 @@ class OneProcess(preprocess.PreProcess):
     def sourceheadraw2final(self):
         final = self._sourceArr.copy()
         line = self._headLine
-        draw = self._drawArr
+        draw = (self._drawArr & self._inpaintMaskArr) + (final & ~self._inpaintMaskArr)
         final[line:,:] = draw[line:,:]
         cv2.imwrite(self._finalPath, cv2.cvtColor(final, cv2.COLOR_RGB2BGR))
 
@@ -66,7 +67,7 @@ class OneProcess(preprocess.PreProcess):
                 init_img=pixelImage,
                 sketch=None, init_img_with_mask=None, inpaint_color_sketch=None, inpaint_color_sketch_orig=None,
                 init_img_inpaint=None, init_mask_inpaint=None,
-                steps=20, sampler_index=0, mask_blur=4, mask_alpha=0, inpainting_fill=0, restore_faces=False, tiling=False,
+                steps=20, sampler_index=16, mask_blur=4, mask_alpha=0, inpainting_fill=0, restore_faces=False, tiling=False,
                 n_iter=1, batch_size=1, cfg_scale=7, image_cfg_scale=1.5, denoising_strength=DENOISING_STRENGTH,
                 seed=1, subseed=-1, subseed_strength=0, seed_resize_from_h=0, seed_resize_from_w=0, seed_enable_extras=False,
                 height=self._height, width=self._width, resize_mode=0, inpaint_full_res=False, inpaint_full_res_padding=0,
@@ -112,9 +113,9 @@ class TwoProcess(OneProcess):
         pixel_img.paste(pixelImage, (self._width, 0))
         # mask
         latent_mask = pilImage.new("RGB", (self._width*2, self._height), "black")
-        latent_mask.paste(pilImage.fromarray(self._inpaintMaskArr), (self._width, 0))
-        #latent_draw = pilImageDraw.Draw(latent_mask)
-        #latent_draw.rectangle((self._width,0,self._width*2, self._height), fill="white")
+        #latent_mask.paste(pilImage.fromarray(self._inpaintMaskArr), (self._width, 0))
+        latent_draw = pilImageDraw.Draw(latent_mask)
+        latent_draw.rectangle((self._width,self._rawHeadLine,self._width*2, self._height), fill="white")
         output_imgs,_,_,_ = img2img_controlnet(id_task="fds", mode=4,
                                                prompt=PROMPT,
                                                negative_prompt=NE_PROMPT,
@@ -122,7 +123,7 @@ class TwoProcess(OneProcess):
                                                init_img=None,
                                                sketch=None, init_img_with_mask=None, inpaint_color_sketch=None, inpaint_color_sketch_orig=None,
                                                init_img_inpaint=pixel_img, init_mask_inpaint=latent_mask,
-                                               steps=20, sampler_index=0, mask_blur=4, mask_alpha=0, inpainting_fill=1, restore_faces=False, tiling=False,
+                                               steps=20, sampler_index=16, mask_blur=4, mask_alpha=0, inpainting_fill=1, restore_faces=False, tiling=False,
                                                n_iter=1, batch_size=1, cfg_scale=7, image_cfg_scale=1.5, denoising_strength=DENOISING_STRENGTH,
                                                seed=1, subseed=-1, subseed_strength=0, seed_resize_from_h=0, seed_resize_from_w=0, seed_enable_extras=False,
                                                height=self._height, width=self._width*2, resize_mode=0, inpaint_full_res=0, inpaint_full_res_padding=32,
@@ -131,21 +132,38 @@ class TwoProcess(OneProcess):
         self._drawArr = np.asarray(self._drawImage)
         self._drawImage.save(self._drawPath)
 
+def clearPath(path):
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+    os.mkdir(path)
 if __name__=="__main__":
+    from p2v import Video
+    import os
     preprocess.initialize()
-    firstProc = None
-    l = os.listdir("workdir/input")
-    l.sort()
-    for fileName in l:
-        simpleName = fileName.split(".")[0]
-        if firstProc is None:
-            curProc = OneProcess(simpleName)
-            if curProc.main():
-                firstProc = curProc
-        else:
-            curProc = TwoProcess(simpleName, firstProc)
-            #curProc = OneProcess(simpleName)
-            if curProc.main():
-                firstProc = curProc
-    from p2v import images_to_video
-    images_to_video()
+    for videoName in ["zhoukeyi.mp4"]: #, "cyn.mp4", "buerwanji1.mp4", "dujixiao.mp4"]:
+        clearPath("workdir/input")
+        clearPath("workdir/final")
+        video = Video(videoName)
+        video.source2input()
+        video.input2image()
+        firstProc = None
+        l = os.listdir("workdir/input")
+        l.sort()
+        for fileName in l:
+            simpleName = fileName.split(".")[0]
+            if firstProc is None:
+                curProc = OneProcess(simpleName)
+                if curProc.main():
+                    firstProc = curProc
+                    print(videoName, fileName, "finish")
+                else:
+                    print(videoName, fileName, "ignore")
+            else:
+                curProc = TwoProcess(simpleName, firstProc)
+                #curProc = OneProcess(simpleName)
+                if curProc.main():
+                    firstProc = curProc
+                    print(videoName, fileName, "finish")
+                else:
+                    print(videoName, fileName, "ignore")
+        video.image2immute()
