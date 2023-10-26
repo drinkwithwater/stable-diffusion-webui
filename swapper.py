@@ -88,11 +88,13 @@ def swap_face(source_face, target_img: np.ndarray, last_bbox=None)->np.ndarray:
     model_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), model)
     face_swapper = getFaceSwapModel(model_path)
 
-    target_faces = get_faces_all(target_img, last_bbox)
-    result_arr = target_img
-    for target_face in target_faces:
-        result_arr = face_swapper.get(result_arr, target_face, source_face)
-    return result_arr
+    target_face = get_face_single(target_img, last_bbox)
+    if target_face is not None:
+        result_arr = face_swapper.get(target_img, target_face, source_face)
+        return result_arr, target_face.bbox
+    else:
+        #print(f"No target face found")
+        return target_img, None
 
 
 class Main(object):
@@ -127,7 +129,7 @@ class Main(object):
                 break
             if self.fps == 60 and i % 2 == 0:
                 continue
-            result_arr  = swap_face(source_face, frame)
+            result_arr, bbox = swap_face(source_face, frame, bbox)
             if result_arr is None:
                 continue
             writer.write(result_arr)
@@ -166,4 +168,3 @@ class Main(object):
                 img_base = img_path.split(".")[0]
                 outpath = "workspace/result/"+target_base+"_"+img_base+".jpg"
                 cv2.imwrite(outpath, result_arr)
-
